@@ -1,0 +1,8 @@
+have it all recursively under one root
+create a list of utterances in text file, run topic detection
+copy topic vectors with  paste -d"&" ../data/camrest_ids ../output/model/k5.pz_d | while read line; do f=`echo $line | cut -d"&" -f1`; v=`echo $line | cut -d"&" -f2`; echo $v >> $f/topics.txt; done
+cluster the intents (cluster_intents.py) and create files all/n/clustx_raw etc. with copy_clusterized.py (have to run for raw, frames and states)
+to create clust0...clustn dirs use create_clusterized_dirs.sh
+then submith.sh which runs induction
+then augment with topics which merges the slot fillers with utterances, predicts topics and write it all to the same file
+finally analyze.py sorts thecandidate frames
