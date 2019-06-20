@@ -9,9 +9,17 @@ embedder = Embedder(sys.argv[2])
 all_words_dict = defaultdict(list)
 sents = []
 for f in glob.glob(sys.argv[1] + '/*'):
-    with open(f + '/raw.txt', 'rt') as inf:
-        for line in inf:
-            sents.append(word_tokenize(line))
+    try:
+        with open(f + '/raw.txt', 'rt') as inf:
+            for n, line in enumerate(inf):
+                print(n)
+                line = word_tokenize(line)
+                if len(line) < 2:
+                    print(len(line))
+                else:
+                    sents.append(line)
+    except e:
+        print('ERROR: ' + f)
 
 embedded = embedder.sents2elmo(sents)
 for tokenized, embedded_s in zip(sents, embedded):

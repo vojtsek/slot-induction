@@ -5,6 +5,7 @@ from sklearn.cluster import AgglomerativeClustering, KMeans, SpectralClustering
 from nltk.stem import PorterStemmer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize
+from sklearn.utils import assert_all_finite
 
 import numpy as np
 import json
@@ -64,6 +65,7 @@ if __name__ == '__main__':
     parser.add_argument('--root', required=True)
     parser.add_argument('--features', action='store_true')
     parser.add_argument('--features_file', required=True)
+    args = parser.parse_args()
     file_list = sorted(glob.glob(args.root + '/*'))
     with open('top10kws.pkl', 'rb') as inf:
         word_clust_disct = pickle.load(inf)
@@ -81,18 +83,21 @@ if __name__ == '__main__':
                         topic = [float(t) for t in top.split()]
                         doc = nlp(line)
                         state_line = state_f.readline().strip()
-                        print(state_line, f)
                         if len(state_line) == 0:
                             continue
                         state_gt = json.loads(state_line)
                         intent = None
-                        if len(state_gt['slots']) > 0:
-                            intent = 'inform'
-                        elif any(state_gt['requested'].values()):
-                            intent = 'request'
-                        for slot, val in state_gt['slots'].items():
-                            if slot not in state:
+                        #if len(state_gt['slots']) > 0:
+                        #    intent = 'inform'
+                        #elif any(state_gt['requested'].values()):
+                         #   intent = 'request'
+                        for slot, val in state_gt.items():
+                            if slot not in state and val != 'not mentioned':
                                 state[slot] = val
+                                if val in ['yes', 'no']:
+                                    intent = 'request'
+                                else:
+                                    intent = 'inform'
 #                                if slot in ['pricerange','food','area']:
 #                                    intent = 'inform'
 #                                else:
@@ -100,7 +105,6 @@ if __name__ == '__main__':
 #    for i, doc in enumerate(nlp.pipe(text_gen, n_threads=1, batch_size=1)):
 #        for sent in doc.sents:
                         analysis = []
-                        idx += 1
                         for s in doc.sents:
                             for w in s:
                                 analysis.append((w, w.lemma_, w.pos_, w.ent_type_))
@@ -108,14 +112,16 @@ if __name__ == '__main__':
                                     pos_vocab[w.pos_] = len(pos_vocab)
                                 if w.text not in word_vocab and str(w.text) not in stopwords:
                                     word_vocab[str(w.text)] = len(word_vocab)
-                            if construct:
-                                yield Sentence(line, analysis, embeddings, topic, f, idx, intent,word_clust_disct)
-                            else:
-                                yield False
+                        if construct:
+                            idx += 1
+                            print(idx)
+                            yield Sentence(line, analysis, embeddings, topic, f, idx, intent, word_clust_disct)
+                        else:
+                            yield False
 
     if args.features:
         list(get_analyze_gen())
-        all_sents = [sentence for sentence in get_analyze_gen(True)]
+        all_sents = list(get_analyze_gen(True))
         with open(args.features_file, 'wb') as f:
             pickle.dump(all_sents, f)
     else:
@@ -126,6 +132,9 @@ if __name__ == '__main__':
         all_sents_pos = normalize(np.array([sent.bop_enc for sent in all_sents]))
         all_sents_embs = normalize(np.array([sent.boe_enc for sent in all_sents]))
         all_sents_clust = normalize(np.array([sent.boc for sent in all_sents]))
+        for n, t in enumerate(all_sents_topic):
+            if not np.all(np.isfinite(t)):
+                all_sents_topic[n] = np.ones((all_sents_topic.shape[1],)) / all_sents_topic.shape[1]
         all_sents_np = np.concatenate((all_sents_topic, all_sents_words, all_sents_pos), axis=1)
 #all_sents = [' '.join(sent.tokens) for sent in all_sents]
 #vectorizer = TfidfVectorizer(tokenizer=lambda t: [stemmer.stem(tk) for tk in word_tokenize(t)],

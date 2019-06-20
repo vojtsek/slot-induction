@@ -12,6 +12,7 @@ import pickle
 import re
 from nltk import word_tokenize, pos_tag
 
+pos_dict = {}
 class InductedSlot:
     def __init__(self, name, coherence_table):
         self.name = name
@@ -22,6 +23,7 @@ class InductedSlot:
         self.templates = []
         self.coherence_table = coherence_table
         self.all_templates_counts = defaultdict(int)
+        self.all_sentences = []
 
     def add_frame(self, name):
         self.frame_names.append(name)
@@ -49,6 +51,7 @@ class InductedSlot:
         return None
 
     def read_sentence(self, sent, parse):
+        self.all_sentences.append(sent)
         val = self.matches_parse(parse)
         sent = word_tokenize(sent.lower())
         if val is not None and val[0] in sent:
@@ -70,23 +73,36 @@ class InductedSlot:
         print(self.templates)
 
 class Slot:
-    def __init__(self, slot_name, frq, coher, neigh_coherence, fillers, topic, embeddings):
+    def __init__(self, slot_name, frq, coher1, coher2, neigh_coherence, fillers, topics, embeddings):
         self.slot_name = slot_name
-        self.topic = topic
+        self.topics = topics
+        self.topic = np.argmax(topics)
         self.frequency = frq
-        self.coherence = coher
+        self.coherence1 = coher1
+        self.coherence2 = coher2
         self.neigh_coherence = neigh_coherence
         self.embeddings = embeddings
         self.fillers = json.loads(' '.join(fillers))
         self.embedded = None
         self.rankings = []
+        self.pos_feature = None
+        self.all_pos = []
+        for filler in fillers:
+            pos = pos_tag(word_tokenize(filler))
+            for p in pos:
+                if p not in pos_dict:
+                    pos_dict[p] = len(pos_dict)
+            self.all_pos += pos
 
     def embed(self):
-        fillers = [tk for tkns in self.fillers for tk in tkns.split()if self.embeddings.contains(tk)]
+        fillers = [tk for tkns in self.fillers for tk in tkns.split() if self.embeddings.contains(tk)]
         if len(fillers) > 0:
             self.embedded = np.mean(np.stack([self.embeddings[tk] for tk in fillers]), axis=0)
         else:
             self.embedded = self.embeddings['<UNK>']
+        self.pos_feature = [0] * len(pos_dict)
+        for p in self.all_pos:
+            self.pos_feature[pos_dict[p]] += 1
 
     def similarity(self, other):
         set1 = set([tk for tkns in self.fillers for tk in tkns.split()])
@@ -156,7 +172,6 @@ class UnsupervisedRanker:
 
 
 if __name__ == '__main__':
-    embeddings = None
     parser = argparse.ArgumentParser()
     parser.add_argument('--frame_file', required=True)
     parser.add_argument('--similarities', required=True)
@@ -165,22 +180,29 @@ if __name__ == '__main__':
     parser.add_argument('--topics', type=int, default=10)
     parser.add_argument('--output_mapping', required=True)
     parser.add_argument('--root', required=True)
+    parser.add_argument('--chosen_slots', required=True)
     args = parser.parse_args()
+    embeddings = Embedding('~/hudecek/data/numberbatch/numberbatch-en-17.06.txt')
     with open(args.frame_file, 'rt') as inf:
         for line in inf:
             line = line.split()
             if 'nan' in line[0]:
-                topic=-1
+                topics = [0] * args.topics
             else:
                 topics = [float(t) for t in line[:args.topics]]
-                topic = np.argmax(topics)
             line = line[args.topics:]
             frq = float(line[1].strip(',')) if line[1] != 'None' else None
-            coh = float(line[2].strip(',')) if line[2] != 'None' else None
-            ngh_coh = float(line[3].strip(',')) if line[3] != 'None' else None
-            if len(line[4:]) < 3:
+            coh1 = float(line[2].strip(',')) if line[2] != 'None' else None
+            coh2 = float(line[3].strip(',')) if line[3] != 'None' else None
+            last = 4
+            try:
+                float(line[4])
+            except:
+                last = 3
+            ngh_coh = float(line[last].strip(',')) if line[last] != 'None' else None
+            if len(line[last+1:]) < 3:
                 continue
-            slot = Slot(line[0].strip(','), frq, coh, ngh_coh, line[4:], topic, embeddings)
+            slot = Slot(line[0].strip(','), frq, coh1, coh2, ngh_coh, line[last+1:], topics, embeddings)
             slot_list.append(slot)
 
     if args.mode == 'sim':
@@ -202,16 +224,19 @@ if __name__ == '__main__':
         # sorted_list = sorted(slot_list, key=get_rank_f(args.alpha))
         for n, sl in  enumerate(sorted(slot_list, key=lambda sl: sl.frequency, reverse=True)):
             sl.rankings.append(n)
-        for n, sl in  enumerate(sorted(slot_list, key=lambda sl: sl.coherence, reverse=True)):
+        for n, sl in  enumerate(sorted(slot_list, key=lambda sl: sl.coherence1, reverse=True)):
+            sl.rankings.append(n)
+        for n, sl in  enumerate(sorted(slot_list, key=lambda sl: sl.coherence2, reverse=True)):
             sl.rankings.append(n)
         for n, sl in  enumerate(sorted(slot_list, key=lambda sl: sl.neigh_coherence, reverse=True)):
             sl.rankings.append(n)
 
-        rankings = [[], [], []]
+        rankings = [[], [], [], []]
         for sl in slot_list:
             rankings[0].append(sl.rankings[0])
             rankings[1].append(sl.rankings[1])
             rankings[2].append(sl.rankings[2])
+            rankings[3].append(sl.rankings[3])
         ranker = UnsupervisedRanker(rankings, threshold=25, lmb=0.9)
         ranker.estimate_weights()
         ranks = ranker.rank()
@@ -220,9 +245,12 @@ if __name__ == '__main__':
         current_cluster = 0
         coherence_table = {}
         for sl in sorted_list:
-            print(sl.slot_name, sl.topic, sl.frequency, sl.coherence, sl.neigh_coherence, sl.rankings, sl.fillers)
-            coherence_table[sl.slot_name] = sl.coherence
+            sl.embed()
+            print(sl.slot_name, sl.topic, sl.frequency, sl.coherence1, sl.coherence2, sl.neigh_coherence, sl.rankings, sl.fillers)
+            coherence_table[sl.slot_name] = sl.coherence1
         chosen = sorted_list[-15:]
+        with open(args.chosen_slots, 'wb') as of:
+            pickle.dump(sorted_list[-20:], of)
         for sl in chosen:
             slot = sl.slot_name
             chosen_names = [sl.slot_name for sl in chosen]
@@ -239,10 +267,10 @@ if __name__ == '__main__':
             inducted[cl].add_frame(frame_name)
         for sl in inducted.values():
             for d in glob.glob(args.root + '/*'):
-                if not os.path.exists(d + '/semafor-frames.json'):
+                if not os.path.exists(d + '/frames.json'):
                     continue
                 with open(d + '/raw.txt', 'rt') as raw_f,\
-                     open(d + '/semafor-frames.json', 'rt') as frame_f:
+                     open(d + '/frames.json', 'rt') as frame_f:
                         for raw, frames in zip(raw_f, frame_f):
                             frames = json.loads(frames)
                             sl.read_sentence(raw, frames)

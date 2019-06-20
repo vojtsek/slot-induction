@@ -1,8 +1,10 @@
+set -x
 stage=$1
 shift
 
 root=$1
 topic_count=10
+pickled_sentences=sentences-$3.pkl
 if [ "$stage" = "topic" ]; then
     topic_script=/home/hudecek/hudecek/dialogues-semi-sup/slot-induction/BTM/script/runExample.sh
     topic_output=/home/hudecek/hudecek/dialogues-semi-sup/slot-induction/BTM/output/model
@@ -22,10 +24,11 @@ elif [ "$stage" = "elmo" ]; then
 elif [ "$stage" = "cluster" ]; then
     embedding_file=$2
     python cluster_intents.py --root $root --embeddings $embedding_file --features --features_file $pickled_sentences
-    qsub -cwd -N autoencoding -j y submit-ae.sh $topic_count $pickled_sentences
-    echo "Features computed, submitted autoencoding. Wait for it to finish and then run:"
+    qsub -cwd -N autoencoding -j y -q cpu-troja.q submit-ae.sh $topic_count $pickled_sentences
+    echo "Features computed, submitted autoencoding. Wait for it to finish and then run this with cluster2"
 elif [ "$stage" = "cluster2" ]; then
-    python cluster_intents.py --root $root --embeddings $embedding_file --features_file $pickled_sentences >> clustered_intents.out
+    embedding_file=$2
+    python cluster_intents.py --root $root --embeddings $embedding_file --features_file $pickled_sentences > clustered_intents.out
     cat clustered_intents.out | python copy_clusterized.py "semafor-frames.json" "frames_"
     cat clustered_intents.out | python copy_clusterized.py "raw.txt" "raw_"
     cat clustered_intents.out | python copy_clusterized.py "state.json" "state_"
@@ -33,7 +36,18 @@ elif [ "$stage" = "cluster2" ]; then
     bash create_clustered_dirs.sh $root clust1
     bash create_clustered_dirs.sh $root clust2
 elif [ "$stage" = "induct" ]; then
-    dd
+    embedding_file=$2
+    qsub -cwd -j y -q cpu-troja.q submit.sh $root clust0 $embedding_file $3
+    qsub -cwd -j y -q cpu-troja.q submit.sh $root clust1 $embedding_file $3
+    qsub -cwd -j y -q cpu-troja.q submit.sh $root clust2 $embedding_file $3
+    qsub -cwd -j y -q cpu-troja.q submit.sh $root all $embedding_file $3
+elif [ "$stage" = "analyze" ]; then
+    data=$2
+    cluster=$3
+    if [ ! -z $4 ]; then
+        bash augment_with_topics.sh $data-$cluster-induction_results_semafor_parser_embs.txt > $data-$cluster-induction_results_semafor_parser_embs_topics.txt
+    fi
+    python analyze.py --frame_file $data-$cluster-induction_results_semafor_parser_embs_topics.txt --similarities similarities-set.json --alpha 0.7 --output_mapping inducted-$data-$cluster.pkl --root $root --chosen_slots slots-chosen-$data-$cluster.pkl
 else
     echo "UNKNOWN stage!"
 fi

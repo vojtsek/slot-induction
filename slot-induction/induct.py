@@ -52,9 +52,7 @@ class SemanticSlot:
     def compute_frequency(self, total_slots):
         self.frequency = self.occurences / total_slots
 
-    def _embed(self, span):
-        embeddings = self.embeddings
-        embs = []
+    def _embed(self, span, embeddings):
         embedding = np.mean(np.stack([embeddings[tk] for tk in span], axis=0), axis=0)
         return embedding
 
@@ -75,25 +73,29 @@ class SemanticSlot:
     def _compute_sim(self, span1, span2):
         full1 = span1
         full2 = span2
-        span1 = word_tokenize(span1)
-        span2 = word_tokenize(span2)
-        if any([not self.embeddings.contains(tk) for tk in span1 + span2]):
-            return -2
-        span1 = self._embed(span1)
-        span2 = self._embed(span2)
+        span1_tk = word_tokenize(span1)
+        span2_tk = word_tokenize(span2)
+        sims = []
+        for embeddings in self.embeddings:
+            if any([not embeddings.contains(tk) for tk in span1_tk + span2_tk]):
+                sims.append(-2)
+                continue
+            span1 = self._embed(span1_tk, embeddings)
+            span2 = self._embed(span2_tk, embeddings)
 #        print('Span1', span1)
 #        print('Span2', span2)
 #        print('dot', np.dot(span1, span2))
 #        print('norm1', np.linalg.norm(span1))
 #        print('norm2', np.linalg.norm(span2))
-        sim = np.dot(span1, span2) / (np.linalg.norm(span1) * np.linalg.norm(span2))
-        if np.isnan(sim):
-            sim = 0
+            sim = np.dot(span1, span2) / (np.linalg.norm(span1) * np.linalg.norm(span2))
+            if np.isnan(sim):
+                sim = 0
+            sims.append(sim)
         vocab.add(full1)
         vocab.add(full2)
-        global_sims[full1][full2] = sim
-        global_sims[full2][full1] = sim
-        return sim
+        global_sims[full1][full2] = np.mean(sims)
+        global_sims[full2][full1] = np.mean(sims)
+        return sims
 
     def filter_outliers(self):
 #        X = np.array([emb for _, emb in self.embedded])
@@ -102,13 +104,13 @@ class SemanticSlot:
 
         if len(self.distinct_spans) < 3:
             return
-        orig = self.compute_coherence()
+        orig = self.compute_coherence()[0]
         to_omit = set()
         for chosen in self.distinct_spans:
             if len(self.distinct_spans) < 3:
                 return
             leave_chosen = [sp for sp in self.distinct_spans if sp != chosen]
-            coh_1out = self.compute_coherence(spans=leave_chosen)
+            coh_1out = self.compute_coherence(spans=leave_chosen)[0]
             relative_improvement = (coh_1out - orig) * (len(self.distinct_spans) - 1)
             if relative_improvement > 0.5:
                 to_omit.add(chosen)
@@ -118,7 +120,8 @@ class SemanticSlot:
         if spans is None:
             spans = self.distinct_spans
         if len(spans) < 2:
-            self.coherence = self.neigh_coherence = 0
+            self.coherences = [0, 0]
+            self.neigh_coherence = 0
             return -3
         # for span1, span2 in itertools.combinations(self.distinct_spans, 2):
         #    print(span1, span2)
@@ -127,16 +130,17 @@ class SemanticSlot:
         if neigh:
             self.neigh_coherence = sum([self._compute_neighbor_sim(span1, span2) for span1, span2 in comb]) / len(comb)
         else:
-            self.coherence = sum([self._compute_sim(span1, span2) for span1, span2 in comb]) / len(comb)
-        return self.coherence
+            similarities = np.array([self._compute_sim(span1, span2) for span1, span2 in comb])
+            self.coherences = np.sum(similarities, axis=0) / len(comb)
+        return self.coherences
 
     def finalize(self):
         self.distinct_spans = set([self.filter_by_embeddings(sp) for sp in set(self.spans) if len(self.filter_by_embeddings(sp)) > 0])
-        self.embedded = [(sp, self.embeddings[sp]) for sp in self.distinct_spans]
+        # self.embedded = [(sp, self.embeddings[sp]) for sp in self.distinct_spans]
         self.filter_outliers()
 
     def filter_by_embeddings(self, span):
-        return ' '.join([w for w in word_tokenize(span) if self.embeddings.contains(w)])
+        return ' '.join([w for w in word_tokenize(span) if self.embeddings[1].contains(w)])
 
 
 class InducedSlots:
@@ -200,9 +204,9 @@ class InducedSlots:
 
     def _rank_f(self, slot):
         slot = slot[1]
-        if slot.coherence is None:
+        if slot.coherences is None:
             return 0
-        return (1 - alpha) * slot.frequency + alpha * slot.coherence
+        return (1 - alpha) * slot.frequency + alpha * slot.coherences[0]
 
     @property
     def sorted_slots(self):
@@ -210,10 +214,10 @@ class InducedSlots:
 
 
 if __name__ == '__main__':
-    alpha = float(sys.argv[2])
-    embeddings = Embedding('~/hudecek/data/elmo/elmo_camrest_embs.txt')
-    # embeddings = Embedding('~/hudecek/data/word2vec/wiki-news-300d-1M.vec')
-    induced_slots = InducedSlots(embeddings, alpha)
+    alpha = 0
+    embeddings_elmo = Embedding(sys.argv[2])
+    embeddings_cn = Embedding('~/hudecek/data/numberbatch/numberbatch-en-17.06.txt')
+    induced_slots = InducedSlots([embeddings_elmo, embeddings_cn], alpha)
     of = open(sys.argv[3], 'wt')
     for dial_dir in glob.glob(sys.argv[1] + '/*'):
         state = {}
@@ -244,6 +248,6 @@ if __name__ == '__main__':
 #            print('Unknown slot')
     induced_slots.finalize()
     for slot_name, slot in induced_slots.sorted_slots:
-        print('{} {} {} {} {}'.format(slot_name, slot.frequency, slot.coherence, slot.neigh_coherence, json.dumps(list(slot.distinct_spans))), file=of)
+        print('{} {} {} {} {}'.format(slot_name, slot.frequency, ' '.join([str(c) for c in slot.coherences]), slot.neigh_coherence, json.dumps(list(slot.distinct_spans))), file=of)
     of.close()
      
